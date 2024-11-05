@@ -42,6 +42,7 @@ void run_command(char *buf, int nbuf, int *pcp) {
   char *file_name_l = 0;
   char *file_name_r = 0;
 
+  int pipe_cmd = 0;
   int sequence_cmd = 0;
   int i = 0;
 
@@ -53,6 +54,12 @@ void run_command(char *buf, int nbuf, int *pcp) {
     } else if (ws) {
       arguments[numargs++] = &buf[i];
       ws = 0;
+    }
+
+    if (buf[i] == '|') {
+      buf[i] = '\0';
+      pipe_cmd = 1;
+      break;
     }
 
     if (buf[i] == ';') {
@@ -100,42 +107,58 @@ void run_command(char *buf, int nbuf, int *pcp) {
   // Handle output redirection if found
   if (redirection_right) {
     close(1); // Close stdout
-    if (open(file_name_r, 1 | 0x200 | 0x400) < 0) {  // Equivalent to O_WRONLY | O_CREATE | O_TRUNC
+    if (open(file_name_r, 1 | 0x200 | 0x400) < 0) { 
       fprintf(2, "Failed to open %s for writing\n", file_name_r);
       exit(1);
     }
   }
 
-  // Execute the command, treating `cat < file` as a direct input redirection
-  if (strcmp(arguments[0], "cat") == 0 && redirection_left) {
-    // Directly read from file_name_l, print contents to stdout
-    char buffer[512];
-    int bytes;
-    while ((bytes = read(0, buffer, sizeof(buffer))) > 0) {
-      write(1, buffer, bytes);
-    }
-    exit(0);
-  }
+  // Handle piping
+  if (pipe_cmd) {
+    int p[2];
+    pipe(p);
 
-  // Execute the command normally
-  if (strcmp(arguments[0], "cd") == 0) {
-    if (numargs < 2 || chdir(arguments[1]) < 0) {
-      fprintf(2, "cd: cannot change directory to %s\n", numargs < 2 ? "" : arguments[1]);
-    }
-    exit(2);
-  } else {
-    if (fork() == 0) {
-      exec(arguments[0], arguments);
+    if (fork() == 0) { // Left side of the pipe
+      close(p[0]); // Close read end
+      close(1); // Close stdout
+      dup(p[1]); // Redirect stdout to write end of pipe
+      close(p[1]);
+      exec(arguments[0], arguments); // Execute left side command
       fprintf(2, "exec %s failed\n", arguments[0]);
       exit(1);
     } else {
-      wait(0);
+      if (fork() == 0) { // Right side of the pipe
+        close(p[1]); // Close write end
+        close(0); // Close stdin
+        dup(p[0]); // Redirect stdin to read end of pipe
+        close(p[0]);
+        run_command(buf + i + 1, nbuf - (i + 1), pcp); // Execute right side command
+      } else {
+        close(p[0]);
+        close(p[1]);
+        wait(0);
+        wait(0);
+      }
+    }
+  } else {
+    // Normal execution for non-piped commands
+    if (strcmp(arguments[0], "cd") == 0) {
+      if (numargs < 2 || chdir(arguments[1]) < 0) {
+        fprintf(2, "cd: cannot change directory to %s\n", numargs < 2 ? "" : arguments[1]);
+      }
+      exit(2);
+    } else {
+      if (fork() == 0) {
+        exec(arguments[0], arguments);
+        fprintf(2, "exec %s failed\n", arguments[0]);
+        exit(1);
+      } else {
+        wait(0);
+      }
     }
   }
   exit(0);
 }
-
-
 
 
 
